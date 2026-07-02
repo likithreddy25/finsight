@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+data/chroma
+dashboard/node_modules
+dashboard/dist
+tests
+eval/benchmark_results.csv

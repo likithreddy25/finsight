@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/vite-env.d.ts","./src/components/breakdownchart.tsx","./src/components/filingslist.tsx","./src/components/scoremeter.tsx","./src/components/statusbadge.tsx","./src/components/tickersearch.tsx"],"errors":true,"version":"5.9.3"}
