@@ -1,0 +1,291 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  FinSight API on ECS Fargate behind an ALB, with EFS-backed ChromaDB
+  persistence, Secrets Manager for HF_TOKEN, and CloudWatch logging.
+  Runs CPU-only (no GPU on Fargate) -> the app's own documented
+  heuristic-scoring fallback is expected/used unless HF_TOKEN is set
+  and the instance is sized for the full Llama model.
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into (your account's default VPC is fine)
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least 2 PUBLIC subnets in that VPC (so tasks can reach ECR/EDGAR/HF without a NAT gateway)
+
+  ImageUri:
+    Type: String
+    Description: Full ECR image URI for the FinSight API image, e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/finsight-api:latest
+
+  SecUserAgent:
+    Type: String
+    Description: 'SEC EDGAR fair-access identifier, e.g. "Likhith Reddy likilogan@gmail.com"'
+
+  HfToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >
+      Optional Hugging Face token for the gated Llama base model. Leave blank
+      to intentionally run in the app's documented heuristic-fallback mode
+      (recommended for this deployment — avoids needing GPU/high-memory Fargate tasks).
+
+  ContainerPort:
+    Type: Number
+    Default: 8000
+
+  TaskCpu:
+    Type: String
+    Default: "1024"
+    AllowedValues: ["512", "1024", "2048"]
+
+  TaskMemory:
+    Type: String
+    Default: "3072"
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+Resources:
+
+  # ---------------- Logging ----------------
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/finsight-api
+      RetentionInDays: 14
+
+  # ---------------- Secrets ----------------
+  HfTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: finsight/hf-token
+      Description: Hugging Face token for FinSight's gated Llama base model
+      SecretString: !Ref HfToken
+
+  # ---------------- Security Groups ----------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FinSight ALB - allow inbound HTTP
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FinSight ECS task - allow inbound only from the ALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: FinSight EFS - allow NFS only from the ECS task
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  # ---------------- EFS (ChromaDB persistence) ----------------
+  ChromaFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      LifecyclePolicies:
+        - TransitionToIA: AFTER_30_DAYS
+      FileSystemTags:
+        - Key: Name
+          Value: finsight-chroma-data
+
+  ChromaAccessPoint:
+    Type: AWS::EFS::AccessPoint
+    Properties:
+      FileSystemId: !Ref ChromaFileSystem
+      PosixUser:
+        Uid: "1000"
+        Gid: "1000"
+      RootDirectory:
+        Path: /chroma
+        CreationInfo:
+          OwnerUid: "1000"
+          OwnerGid: "1000"
+          Permissions: "0755"
+
+  ChromaMountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ChromaFileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  ChromaMountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ChromaFileSystem
+      SubnetId: !Select [1, !Ref SubnetIds]
+      SecurityGroups: [!Ref EfsSecurityGroup]
+
+  # ---------------- ALB ----------------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: finsight-alb
+      Scheme: internet-facing
+      Subnets: !Ref SubnetIds
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Type: application
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: finsight-api-tg
+      VpcId: !Ref VpcId
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # ---------------- ECS ----------------
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: finsight-cluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadFinSightSecret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref HfTokenSecret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      # FinSight only calls external HTTP APIs (SEC EDGAR, Hugging Face) --
+      # no additional AWS permissions are needed by the running app itself.
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: finsight-api
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: chroma-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref ChromaFileSystem
+            TransitEncryption: ENABLED
+            AuthorizationConfig:
+              AccessPointId: !Ref ChromaAccessPoint
+              IAM: ENABLED
+      ContainerDefinitions:
+        - Name: finsight-api
+          Image: !Ref ImageUri
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+          Environment:
+            - Name: SEC_USER_AGENT
+              Value: !Ref SecUserAgent
+            - Name: CHROMA_PERSIST_DIR
+              Value: /app/data/chroma
+            - Name: MODEL_DEVICE
+              Value: cpu
+          Secrets:
+            - Name: HF_TOKEN
+              ValueFrom: !Ref HfTokenSecret
+          MountPoints:
+            - SourceVolume: chroma-data
+              ContainerPath: /app/data/chroma
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: Listener
+    Properties:
+      ServiceName: finsight-api
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [!Ref TaskSecurityGroup]
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - ContainerName: finsight-api
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ApiUrl:
+    Description: Public URL for the FinSight API
+    Value: !Sub "http://${LoadBalancer.DNSName}"
+  ClusterName:
+    Value: !Ref Cluster
+  LogGroup:
+    Value: !Ref ApiLogGroup
+  ChromaFileSystemId:
+    Value: !Ref ChromaFileSystem
