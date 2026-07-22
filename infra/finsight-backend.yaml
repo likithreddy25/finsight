@@ -26,7 +26,7 @@ Parameters:
   HfToken:
     Type: String
     NoEcho: true
-    Default: ""
+    Default: "not-provided"
     Description: >
       Optional Hugging Face token for the gated Llama base model. Leave blank
       to intentionally run in the app's documented heuristic-fallback mode
