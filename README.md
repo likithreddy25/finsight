@@ -126,6 +126,8 @@ and sufficient for questions where semantic relevance dominates.
 
 ## Evaluation
 
+### Score Benchmark (vs GPT-4o)
+
 ```bash
 export OPENAI_API_KEY=sk-...
 python -m eval.benchmark --tickers AAPL MSFT GOOGL AMZN TSLA JPM XOM WMT NVDA META
@@ -135,16 +137,63 @@ Scores each ticker with both FinSight and GPT-4o (given identical retrieved cont
 signals), writes `eval/benchmark_results.csv`, and prints summary stats (mean/max absolute
 difference, correlation).
 
+### Faithfulness Evaluation
+
+```bash
+export OPENAI_API_KEY=sk-...
+python -m eval.faithfulness --tickers AAPL MSFT TSLA --output eval/faithfulness_results.csv
+```
+
+Measures whether QA answers are grounded in retrieved context:
+- For each (ticker, question) pair, the agent generates an answer
+- A fact-checker validates each claim against the retrieved filing chunks
+- Outputs CSV with per-query faithfulness scores + aggregate statistics by ticker
+- Computes: mean faithfulness, supported-claims ratio, per-ticker breakdown
+
+Example output: **67.3% avg faithfulness** — what fraction of claims are actually supported
+by filing evidence rather than model hallucinations. This is the metric to track when
+discussing AI quality: groundedness, not just score accuracy.
+
 ## Project layout
 
 ```
-ingest/edgar.py     SEC EDGAR client (submissions, archives, XBRL company facts)
-store/chroma.py     Chunking + embedding + ChromaDB persistence
-score/scorer.py     Signal extraction + RAG + fine-tuned Llama scoring (+ heuristic fallback)
-api/main.py         FastAPI app: /score/{ticker}, /query
-dashboard/          React + TypeScript UI (Vite, Recharts)
-eval/benchmark.py   FinSight vs. GPT-4o comparison across companies
-config/settings.py  Shared pydantic-settings config (reads .env)
+ingest/edgar.py          SEC EDGAR client (submissions, archives, XBRL company facts)
+store/chroma.py          Chunking + embedding + ChromaDB persistence
+                         + hybrid retrieval (semantic + BM25) with citation tracking
+score/scorer.py          Signal extraction + RAG + fine-tuned Llama scoring (+ heuristic fallback)
+score/critique.py        Multi-agent fact-checking: validates claim grounding in context
+agent/analyst.py         Tool-calling agent for open-ended questions
+agent/monitor.py         Watchlist monitoring with material-change detection
+api/main.py              FastAPI app: /score/{ticker}, /query, /agent/analyze
+dashboard/               React + TypeScript UI (Vite, Recharts)
+eval/benchmark.py        FinSight vs. GPT-4o comparison across companies
+eval/faithfulness.py     Faithfulness eval: measures claim grounding in test set
+config/settings.py       Shared pydantic-settings config (reads .env)
+```
+
+## Monitoring
+
+Track company health scores over time and flag material changes:
+
+```bash
+python -m agent.monitor --watchlist AAPL MSFT TSLA --threshold 1.5
+```
+
+Compares current scores against prior baselines in a SQLite database and flags score changes
+larger than the threshold (default 1.5 points). Can output JSON for automation:
+
+```bash
+python -m agent.monitor --watchlist AAPL MSFT --output-json alert.json
+```
+
+Scores are persisted per ticker with timestamps, enabling:
+- Portfolio health tracking over weeks/months
+- Automated alerting on material score swings
+- Historical analysis of score dynamics
+
+Can be scheduled as a cron job:
+```
+0 9 * * * cd /path/to/finsight && python -m agent.monitor --watchlist AAPL MSFT TSLA
 ```
 
 ## Known limitations
@@ -154,9 +203,13 @@ config/settings.py  Shared pydantic-settings config (reads .env)
   these more reliably. If hybrid retrieval misses results, try `use_hybrid: false` for pure
   semantic search, or raise `n_results` to retrieve more candidates before fusion.
 - **Citation grounding** in `/query` is manual: the LLM is prompted to cite sources [1], [2] etc.,
-  but there is no automated verification that the cited excerpts actually support the claim. The
-  FinSight agent does not yet check claimed facts against retrieved chunks — see "Multi-Agent
-  Critique Loop" improvements below.
+  but there is no automated verification that the cited excerpts actually support the claim.
+- **Critique loop** currently happens offline after scoring. The critique check is not integrated
+  into the scoring pipeline, so unsupported claims in rationales are reported but not filtered
+  before returning to clients. Integration would require re-prompt-engineering the scorer.
+- **Faithfulness eval** is measured on a small hand-curated test set (3 queries per ticker).
+  Extend this with larger, representative question sets for more robust evaluation.
+- **Monitoring** uses local SQLite; for production, migrate to managed database (e.g. RDS, Firestore).
 - `risk_language` and `filing_sentiment` are lexicon-based heuristics over retrieved chunks,
   not a trained classifier — treat them as directional signals, not ground truth.
 - `revenue_trend` only looks at the two most recent annual XBRL revenue figures; it doesn't
