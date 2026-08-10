@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import chromadb
 from chromadb.utils import embedding_functions
+from rank_bm25 import BM25Okapi
 
 from config.settings import get_settings
 from ingest.edgar import Filing
@@ -25,6 +26,7 @@ class RetrievedChunk:
     text: str
     metadata: dict
     distance: float
+    citation_index: int = 0  # Position in retrieval results for inline citation [1], [2], etc.
 
 
 def chunk_text(text: str, chunk_size: int = 1200, overlap: int = 200) -> list[str]:
@@ -88,6 +90,107 @@ class FilingStore:
     def add_filings(self, filings: list[Filing]) -> int:
         return sum(self.add_filing(f) for f in filings)
 
+    def _get_all_chunks(self, ticker: str | None = None, form_types: list[str] | None = None) -> list[tuple[str, dict]]:
+        """Fetch all chunks matching filters from ChromaDB for BM25 indexing."""
+        where: dict = {}
+        conditions = []
+        if ticker:
+            conditions.append({"ticker": ticker.upper()})
+        if form_types:
+            conditions.append({"form_type": {"$in": form_types}})
+        if len(conditions) == 1:
+            where = conditions[0]
+        elif len(conditions) > 1:
+            where = {"$and": conditions}
+
+        result = self._collection.get(where=where or None, include=["documents", "metadatas"])
+        return list(zip(result["documents"], result["metadatas"]))
+
+    def _bm25_search(
+        self, query_text: str, chunks: list[tuple[str, dict]], n_results: int = 8
+    ) -> list[tuple[int, float]]:
+        """BM25 keyword search over chunks. Returns list of (chunk_index, score) sorted by score."""
+        if not chunks:
+            return []
+        docs = [chunk[0].split() for chunk in chunks]
+        bm25 = BM25Okapi(docs)
+        query_tokens = query_text.lower().split()
+        scores = bm25.get_scores(query_tokens)
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:n_results]
+        return [(idx, score) for idx, score in ranked if score > 0]
+
+    def _reciprocal_rank_fusion(
+        self, semantic_results: dict[int, float], bm25_results: dict[int, float], k: int = 60
+    ) -> list[int]:
+        """Merge semantic and BM25 rankings using reciprocal rank fusion (RRF).
+        RRF score = sum(1 / (k + rank)) for each ranking that includes the item.
+        k=60 is a common default that balances equal contribution from both rankers."""
+        rrf_scores: dict[int, float] = {}
+
+        for rank, idx in enumerate(sorted(semantic_results.keys(), key=lambda x: semantic_results[x], reverse=True)):
+            rrf_scores[idx] = rrf_scores.get(idx, 0) + 1.0 / (k + rank + 1)
+
+        for rank, idx in enumerate(sorted(bm25_results.keys(), key=lambda x: bm25_results[x], reverse=True)):
+            rrf_scores[idx] = rrf_scores.get(idx, 0) + 1.0 / (k + rank + 1)
+
+        return sorted(rrf_scores.keys(), key=lambda x: rrf_scores[x], reverse=True)
+
+    def query_hybrid(
+        self,
+        query_text: str,
+        ticker: str | None = None,
+        form_types: list[str] | None = None,
+        n_results: int = 8,
+    ) -> list[RetrievedChunk]:
+        """Hybrid retrieval: combine semantic search (ChromaDB) with BM25 keyword search.
+
+        Uses reciprocal rank fusion to merge rankings from both methods, giving equal
+        weight to semantic relevance and keyword matching. This helps surface results
+        that might be missed by either method alone."""
+        all_chunks = self._get_all_chunks(ticker=ticker, form_types=form_types)
+        if not all_chunks:
+            return []
+
+        bm25_results_list = self._bm25_search(query_text, all_chunks, n_results=n_results * 2)
+        bm25_results = {idx: score for idx, score in bm25_results_list}
+
+        where: dict = {}
+        conditions = []
+        if ticker:
+            conditions.append({"ticker": ticker.upper()})
+        if form_types:
+            conditions.append({"form_type": {"$in": form_types}})
+        if len(conditions) == 1:
+            where = conditions[0]
+        elif len(conditions) > 1:
+            where = {"$and": conditions}
+
+        semantic_result = self._collection.query(
+            query_texts=[query_text],
+            n_results=n_results * 2,
+            where=where or None,
+        )
+
+        semantic_results = {
+            i: (1 - dist) for i, dist in enumerate(semantic_result["distances"][0])
+        }
+
+        merged_indices = self._reciprocal_rank_fusion(semantic_results, bm25_results)[:n_results]
+
+        chunks: list[RetrievedChunk] = []
+        for citation_idx, chunk_idx in enumerate(merged_indices):
+            text, metadata = all_chunks[chunk_idx]
+            distance = 1 - semantic_results.get(chunk_idx, 0)
+            chunks.append(
+                RetrievedChunk(
+                    text=text,
+                    metadata=metadata,
+                    distance=distance,
+                    citation_index=citation_idx + 1,
+                )
+            )
+        return chunks
+
     def query(
         self,
         query_text: str,
@@ -95,6 +198,7 @@ class FilingStore:
         form_types: list[str] | None = None,
         n_results: int = 8,
     ) -> list[RetrievedChunk]:
+        """Semantic search only (original behavior). Use query_hybrid() for keyword+semantic."""
         where: dict = {}
         conditions = []
         if ticker:
@@ -112,10 +216,14 @@ class FilingStore:
             where=where or None,
         )
         chunks: list[RetrievedChunk] = []
-        for text, metadata, distance in zip(
-            result["documents"][0], result["metadatas"][0], result["distances"][0]
+        for citation_idx, (text, metadata, distance) in enumerate(
+            zip(result["documents"][0], result["metadatas"][0], result["distances"][0])
         ):
-            chunks.append(RetrievedChunk(text=text, metadata=metadata, distance=distance))
+            chunks.append(
+                RetrievedChunk(
+                    text=text, metadata=metadata, distance=distance, citation_index=citation_idx + 1
+                )
+            )
         return chunks
 
     def has_filing(self, accession_number: str) -> bool:

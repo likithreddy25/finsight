@@ -107,12 +107,22 @@ ticker's filings from EDGAR even if already stored.
   "question": "What did the company say about supply chain risk?",
   "ticker": "AAPL",
   "form_types": ["10-K"],
-  "n_results": 5
+  "n_results": 5,
+  "use_hybrid": true
 }
 ```
 
 Retrieves the most relevant stored filing chunks and asks the LLM to answer using only that
 context (falls back to returning the raw chunks if the LLM is unavailable).
+
+**Hybrid retrieval** (`use_hybrid: true`, default): combines semantic search (via sentence-transformers embeddings
+in ChromaDB) with BM25 keyword matching. Results are merged using reciprocal rank fusion,
+giving equal weight to both signals. This improves recall for questions where keyword
+matches are important (e.g., "Item 8-K 5.02" for executive changes). Results include
+inline citation indices `[1]`, `[2]` etc. for grounding.
+
+**Semantic-only** (`use_hybrid: false`): pure embedding-based search via ChromaDB, faster
+and sufficient for questions where semantic relevance dominates.
 
 ## Evaluation
 
@@ -139,6 +149,14 @@ config/settings.py  Shared pydantic-settings config (reads .env)
 
 ## Known limitations
 
+- **Hybrid retrieval** uses BM25, which is fast but treats all tokenized text equally. Compound
+  concepts or phrases that cross chunk boundaries may not rank well; semantic search often finds
+  these more reliably. If hybrid retrieval misses results, try `use_hybrid: false` for pure
+  semantic search, or raise `n_results` to retrieve more candidates before fusion.
+- **Citation grounding** in `/query` is manual: the LLM is prompted to cite sources [1], [2] etc.,
+  but there is no automated verification that the cited excerpts actually support the claim. The
+  FinSight agent does not yet check claimed facts against retrieved chunks — see "Multi-Agent
+  Critique Loop" improvements below.
 - `risk_language` and `filing_sentiment` are lexicon-based heuristics over retrieved chunks,
   not a trained classifier — treat them as directional signals, not ground truth.
 - `revenue_trend` only looks at the two most recent annual XBRL revenue figures; it doesn't

@@ -69,6 +69,7 @@ class QueryRequest(BaseModel):
     ticker: str | None = Field(None, description="Restrict retrieval to this ticker")
     form_types: list[str] | None = Field(None, description='e.g. ["10-K"] or ["8-K"]')
     n_results: int = Field(5, ge=1, le=25)
+    use_hybrid: bool = Field(True, description="Use hybrid (semantic + BM25) retrieval instead of semantic-only")
 
 
 class SourceChunk(BaseModel):
@@ -108,16 +109,28 @@ def get_score(
 
 @app.post("/query", response_model=QueryResponse)
 def query_filings(request: QueryRequest):
-    """RAG query: retrieve relevant filing chunks and synthesize an answer with the LLM."""
+    """RAG query: retrieve relevant filing chunks and synthesize an answer with the LLM.
+
+    Supports hybrid retrieval (semantic + BM25 keyword search via reciprocal rank fusion)
+    for improved recall. Results include citation indices [1], [2], etc. for grounding."""
     store: FilingStore = state["store"]
     llm: LlamaScorer = state["llm"]
 
-    chunks = store.query(
-        request.question,
-        ticker=request.ticker,
-        form_types=request.form_types,
-        n_results=request.n_results,
-    )
+    if request.use_hybrid:
+        chunks = store.query_hybrid(
+            request.question,
+            ticker=request.ticker,
+            form_types=request.form_types,
+            n_results=request.n_results,
+        )
+    else:
+        chunks = store.query(
+            request.question,
+            ticker=request.ticker,
+            form_types=request.form_types,
+            n_results=request.n_results,
+        )
+
     if not chunks:
         raise HTTPException(
             status_code=404,
@@ -125,12 +138,13 @@ def query_filings(request: QueryRequest):
         )
 
     context = "\n\n".join(
-        f"[{c.metadata['ticker']} {c.metadata['form_type']} {c.metadata['filing_date']}] {c.text}"
+        f"[{c.citation_index}] {c.metadata['ticker']} {c.metadata['form_type']} {c.metadata['filing_date']}: {c.text}"
         for c in chunks
     )
     prompt = (
         "You are FinSight, a financial analyst assistant. Answer the question using ONLY the "
-        "filing excerpts below. If the excerpts don't contain the answer, say so.\n\n"
+        "filing excerpts below. If the excerpts don't contain the answer, say so. "
+        "When citing sources, use the citation numbers [1], [2], etc. that are provided.\n\n"
         f"Question: {request.question}\n\nFiling excerpts:\n{context}\n\nAnswer:"
     )
 
