@@ -150,9 +150,10 @@ Measures whether QA answers are grounded in retrieved context:
 - Outputs CSV with per-query faithfulness scores + aggregate statistics by ticker
 - Computes: mean faithfulness, supported-claims ratio, per-ticker breakdown
 
-Example output: **67.3% avg faithfulness** — what fraction of claims are actually supported
-by filing evidence rather than model hallucinations. This is the metric to track when
-discussing AI quality: groundedness, not just score accuracy.
+The harness reports mean faithfulness, the supported-claims ratio and a per-ticker breakdown. No
+measured results are committed to this repo yet, so no faithfulness number is claimed here. Run it
+yourself and read `eval/faithfulness_results.csv`. The score depends on the judge model, the question
+set and the retrieved context, so treat any single run as a rough signal rather than a benchmark.
 
 ## Project layout
 
@@ -161,7 +162,7 @@ ingest/edgar.py          SEC EDGAR client (submissions, archives, XBRL company f
 store/chroma.py          Chunking + embedding + ChromaDB persistence
                          + hybrid retrieval (semantic + BM25) with citation tracking
 score/scorer.py          Signal extraction + RAG + fine-tuned Llama scoring (+ heuristic fallback)
-score/critique.py        Multi-agent fact-checking: validates claim grounding in context
+score/critique.py        Fact-checking step: validates claim grounding in retrieved context (run offline, see Known limitations)
 agent/analyst.py         Tool-calling agent for open-ended questions
 agent/monitor.py         Watchlist monitoring with material-change detection
 api/main.py              FastAPI app: /score/{ticker}, /query, /agent/analyze
@@ -196,6 +197,15 @@ Can be scheduled as a cron job:
 0 9 * * * cd /path/to/finsight && python -m agent.monitor --watchlist AAPL MSFT TSLA
 ```
 
+## Deployment (AWS CloudFormation)
+
+`infra/finsight-backend.yaml` defines the API on ECS Fargate behind an ALB, with EFS-backed ChromaDB
+persistence, Secrets Manager for `HF_TOKEN` and CloudWatch logging. `infra/finsight-frontend.yaml`
+defines the dashboard hosting (S3 + CloudFront). Fargate has no GPU, so a deployment without a GPU-sized
+setup uses the heuristic-scoring fallback described under [Model access](#model-access), not the
+fine-tuned Llama model. These templates are provided as infrastructure code. This README does not claim
+a continuously running production deployment.
+
 ## Known limitations
 
 - **Hybrid retrieval** uses BM25, which is fast but treats all tokenized text equally. Compound
@@ -216,3 +226,7 @@ Can be scheduled as a cron job:
   smooth over one-off items or segment-level detail.
 - The EDGAR client reads only the "recent" filings window (last ~1000 filings per company),
   which comfortably covers a scoring window but not a company's full multi-decade history.
+
+## AI assistance
+
+This project was built with the help of Claude (Anthropic) via Claude Code, which is why Claude appears as a co-author on some commits. I specified the design, reviewed the code and ran the tests and evaluations.
