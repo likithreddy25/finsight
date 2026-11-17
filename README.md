@@ -152,10 +152,25 @@ Measures whether QA answers are grounded in retrieved context:
 - Outputs CSV with per-query faithfulness scores + aggregate statistics by ticker
 - Computes: mean faithfulness, supported-claims ratio, per-ticker breakdown
 
-The harness reports mean faithfulness, the supported-claims ratio and a per-ticker breakdown. No
-measured results are committed to this repo yet, so no faithfulness number is claimed here. Run it
-yourself and read `eval/faithfulness_results.csv`. The score depends on the judge model, the question
-set and the retrieved context, so treat any single run as a rough signal rather than a benchmark.
+The harness reports mean faithfulness, the supported-claims ratio and a per-ticker breakdown. The
+evidence given to the checker is the full output of every tool call the agent made (filing excerpts,
+the health score and signals, revenue facts).
+
+**Measured result** (agent: `gpt-4o-mini`; checker: `gpt-4o-mini`; 9 questions, 3 tickers; full rows in
+`eval/faithfulness_results.csv`):
+
+| | Mean faithfulness | Claims supported |
+|---|---|---|
+| All (9 questions) | 0.724 (median 0.778) | 37 of 47 (78.7%) |
+| AAPL | 0.733 | |
+| MSFT | 0.556 | |
+| TSLA | 0.884 | |
+
+Caveats: this is a small set (9 questions, 47 claims) judged by an LLM, so treat it as a rough
+signal rather than a benchmark. One MSFT question scored 0.0 on a single extracted claim. Each tool's
+output is truncated to about 4,000 characters, so a claim that depends on text past the cut can count
+as unsupported. An earlier version of this harness passed an empty evidence list to the checker and
+reported a meaningless 0.119; that bug is fixed.
 
 ## Project layout
 

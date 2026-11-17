@@ -107,6 +107,7 @@ class ToolCallRecord:
     tool: str
     arguments: dict
     result_summary: str
+    result_full: str = ""  # full tool output (the evidence the answer was built from)
 
 
 @dataclass
@@ -246,7 +247,12 @@ class FinSightAgent:
                     result_json = json.dumps({"error": str(exc)})
 
                 trace.append(
-                    ToolCallRecord(tool=call.function.name, arguments=args, result_summary=result_json[:300])
+                    ToolCallRecord(
+                        tool=call.function.name,
+                        arguments=args,
+                        result_summary=result_json[:300],
+                        result_full=result_json,
+                    )
                 )
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result_json})
 

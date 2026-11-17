@@ -20,7 +20,7 @@ import pandas as pd
 from agent.analyst import FinSightAgent
 from config.settings import get_settings
 from score.critique import FactualClaimChecker
-from store.chroma import FilingStore
+from store.chroma import FilingStore, RetrievedChunk
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -101,7 +101,19 @@ def evaluate_single_query(
                 error="Fact-checker not available (OPENAI_API_KEY not set)",
             )
 
-        critique_result = checker.critique_rationale(answer, [])
+        # Evidence = the full output of every tool call the agent made to build its answer.
+        # (An earlier version passed an empty list here, which made nearly every claim
+        # "unsupported" and the scores meaningless.)
+        evidence = [
+            RetrievedChunk(
+                text=rec.result_full or rec.result_summary,
+                metadata={"form_type": rec.tool, "filing_date": ticker},
+                distance=0.0,
+                citation_index=i,
+            )
+            for i, rec in enumerate(result.trace, 1)
+        ]
+        critique_result = checker.critique_rationale(answer, evidence)
         num_supported = sum(1 for c in critique_result.claims if c.is_supported)
         faithfulness = (
             critique_result.faithfulness_score if critique_result.claims else 0.0
