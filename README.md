@@ -139,6 +139,31 @@ Scores each ticker with both FinSight and GPT-4o (given identical retrieved cont
 signals), writes `eval/benchmark_results.csv`, and prints summary stats (mean/max absolute
 difference, correlation).
 
+**Measured result** (10 tickers, LoRA adapter v1 on Llama 3.2 1B vs `gpt-4o` given the same
+signals and excerpts; rows in `eval/benchmark_results.csv`):
+
+| | FinSight (LoRA v1) | GPT-4o |
+|---|---|---|
+| AAPL | 1.0 | 6.5 |
+| MSFT | 1.0 | 6.5 |
+| GOOGL | 10.0 | 7.5 |
+| AMZN | 9.0 | 8.5 |
+| TSLA | 10.0 | 3.5 |
+| JPM | 8.0 | 8.2 |
+| XOM | 9.0 | 7.5 |
+| WMT | 10.0 | 8.5 |
+| NVDA | 10.0 | 8.5 |
+| META | 1.0 | 8.5 |
+
+Mean absolute difference 3.27 points (max 7.5); Pearson correlation 0.04 (Spearman 0.15); 5 of
+10 tickers within 1.5 points. **The adapter does not track GPT-4o.** Its scores are bimodal
+(1.0 or 8-10), and its rationales are often generic or contradict the signals (for AAPL it said
+revenue was flat while `revenue_trend` was +0.79), whereas GPT-4o's rationales cite the computed
+signals. Adapter v1 should be treated as an unsuccessful first fine-tune, not a working scorer.
+The heuristic score and the signal breakdown are the reliable outputs. Next steps: retrain on
+labeled data with a held-out split, constrain the output format at training time, and re-run this
+benchmark. This is a 10-ticker comparison against another model's score, not against ground truth.
+
 ### Faithfulness Evaluation
 
 ```bash
