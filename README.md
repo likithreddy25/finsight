@@ -1,5 +1,7 @@
 # FinSight
 
+![tests](https://github.com/likithreddy25/finsight/actions/workflows/tests.yml/badge.svg)
+
 Company financial health scoring from real SEC EDGAR filings, using retrieval-augmented
 generation (RAG) over 8-K/10-K text plus a fine-tuned Llama model, backed by quantitative
 signals pulled directly from SEC's structured filing data.
