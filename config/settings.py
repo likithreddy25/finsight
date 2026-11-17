@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
     # Scoring model
-    base_model_id: str = "meta-llama/Llama-3.1-8B-Instruct"
+    base_model_id: str = "meta-llama/Llama-3.2-1B"
     lora_adapter_id: str = "likilogan/finsight-llama-lora-v1"
     hf_token: str | None = None
     model_device: str = "cpu"

@@ -29,7 +29,7 @@ ticker ──> ingest/edgar.py ──> store/chroma.py ──> score/scorer.py �
    - **Filing sentiment** — lexicon-based tone over retrieved MD&A/outlook chunks.
 
    These signals, plus the most relevant retrieved chunks, are handed to a fine-tuned Llama
-   model (`likilogan/finsight-llama-lora-v1`, a LoRA adapter over a Llama 3.1 base) which
+   model (`likilogan/finsight-llama-lora-v1`, a LoRA adapter over Llama 3.2 1B) which
    returns a final 1-10 score and rationale. If the model isn't available (no GPU, no HF
    token/gated access, etc.) the API transparently falls back to a weighted-heuristic score
    built from the same four signals, and says so in the response's `model` field.
@@ -85,7 +85,7 @@ restarts.
 ## Model access
 
 The scorer uses a base Llama model (`BASE_MODEL_ID`, default
-`meta-llama/Llama-3.1-8B-Instruct`) plus a LoRA adapter (`LORA_ADAPTER_ID`, default
+`meta-llama/Llama-3.2-1B`) plus a LoRA adapter (`LORA_ADAPTER_ID`, default
 `likilogan/finsight-llama-lora-v1`) loaded via `transformers` + `peft`. Both typically require
 an `HF_TOKEN` with access granted to the base model's gated repo. Without it — or without
 `torch`/`transformers`/`peft` installed, or without a GPU — `score/scorer.py` catches the
