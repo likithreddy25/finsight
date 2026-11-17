@@ -156,8 +156,12 @@ class FinancialHealthScorer:
 
         model_name = f"{self.llm.base_model_id} + {self.llm.adapter_id}"
         try:
-            raw_output = self.llm.generate(prompt)
+            # Small models often ignore "respond with JSON"; start the object for them.
+            prefill = '{"score": '
+            raw_output = prefill + self.llm.generate(prompt + prefill)
             score_value, rationale = self._parse_llm_output(raw_output, breakdown)
+            if rationale.startswith("Heuristic fallback"):
+                model_name = "heuristic-fallback (LLM output unparsable)"
         except Exception:
             logger.exception("LLM scoring failed for %s; falling back to heuristic score", ticker)
             score_value, rationale = self._heuristic_score(breakdown)
@@ -311,15 +315,19 @@ Respond with ONLY a JSON object of the form:
 
     @staticmethod
     def _parse_llm_output(raw_output: str, breakdown: ScoreBreakdown) -> tuple[float, str]:
-        match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+        start = raw_output.find("{")
+        match = start != -1
         if match:
             try:
-                payload = json.loads(match.group(0))
+                # Models often keep generating after the first object; read only the first.
+                payload, _ = json.JSONDecoder().raw_decode(raw_output[start:])
                 score_value = max(1.0, min(10.0, float(payload["score"])))
                 rationale = str(payload["rationale"])
                 return round(score_value, 1), rationale
             except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                 logger.warning("Could not parse LLM output as JSON: %r", raw_output)
+        else:
+            logger.warning("LLM output contained no JSON object: %r", raw_output[:800])
         return FinancialHealthScorer._heuristic_score(breakdown)
 
     @staticmethod

@@ -210,6 +210,13 @@ a continuously running production deployment.
 
 ## Known limitations
 
+- **The LoRA scorer is experimental.** It is a small adapter on Llama 3.2 1B. Its JSON output is
+  parsed from the first object only (the model keeps generating after it), and in a spot check
+  (AAPL) its score and rationale disagreed with the computed signals (it called revenue "flat"
+  while `revenue_trend` was +0.79). Treat the heuristic score and the signal breakdown as the
+  reliable output; the LLM rationale is not validated. A proper evaluation against held-out
+  labels is not done yet. If the output cannot be parsed, the API returns the heuristic score and
+  labels the model `heuristic-fallback`.
 - **Hybrid retrieval** uses BM25, which is fast but treats all tokenized text equally. Compound
   concepts or phrases that cross chunk boundaries may not rank well; semantic search often finds
   these more reliably. If hybrid retrieval misses results, try `use_hybrid: false` for pure
