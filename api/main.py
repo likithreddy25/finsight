@@ -149,7 +149,10 @@ def query_filings(request: QueryRequest):
     )
 
     try:
-        answer = llm.generate(prompt, max_new_tokens=300).strip()
+        # Greedy decoding on a small model loops on one sentence; penalize repeats for free-text answers.
+        answer = llm.generate(
+            prompt, max_new_tokens=300, repetition_penalty=1.2, no_repeat_ngram_size=4
+        ).strip()
     except Exception:
         logger.exception("LLM unavailable for /query; returning retrieved sources only")
         answer = (

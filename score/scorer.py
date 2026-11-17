@@ -110,7 +110,13 @@ class LlamaScorer:
         self._model.to(self.device)
         self._model.eval()
 
-    def generate(self, prompt: str, max_new_tokens: int = 400) -> str:
+    def generate(
+        self,
+        prompt: str,
+        max_new_tokens: int = 400,
+        repetition_penalty: float = 1.0,
+        no_repeat_ngram_size: int = 0,
+    ) -> str:
         self._load()
         import torch
 
@@ -119,8 +125,9 @@ class LlamaScorer:
             output_ids = self._model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                temperature=0.2,
                 do_sample=False,
+                repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size,
                 pad_token_id=self._tokenizer.eos_token_id,
             )
         generated = output_ids[0][inputs["input_ids"].shape[1] :]

@@ -150,7 +150,11 @@ class EdgarClient:
         """Download a filing's primary document and populate/return its cleaned plain text."""
         resp = self._get(filing.document_url)
         soup = BeautifulSoup(resp.text, "lxml")
-        for tag in soup(["script", "style"]):
+        # ix:header is the hidden inline-XBRL fact block; it is machine data, not filing prose,
+        # and ranks first in retrieval if left in.
+        for tag in soup(["script", "style", "ix:header"]):
+            tag.decompose()
+        for tag in soup.find_all(style=re.compile(r"display\s*:\s*none", re.I)):
             tag.decompose()
         text = soup.get_text(separator="\n")
         text = re.sub(r"\n{2,}", "\n\n", text)

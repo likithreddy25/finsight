@@ -217,6 +217,11 @@ a continuously running production deployment.
   reliable output; the LLM rationale is not validated. A proper evaluation against held-out
   labels is not done yet. If the output cannot be parsed, the API returns the heuristic score and
   labels the model `heuristic-fallback`.
+- **`/query` answer synthesis** uses the same small scoring adapter, which was tuned for the
+  1-10 JSON task, not free-text answers. In a spot check it returned very short or repetitive
+  answers even though retrieval returned the right 10-K passages. The retrieved sources in the
+  response are the reliable part; use `agent/analyst.py` (OpenAI tool-calling) for open-ended
+  questions.
 - **Hybrid retrieval** uses BM25, which is fast but treats all tokenized text equally. Compound
   concepts or phrases that cross chunk boundaries may not rank well; semantic search often finds
   these more reliably. If hybrid retrieval misses results, try `use_hybrid: false` for pure
